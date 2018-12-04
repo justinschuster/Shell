@@ -63,6 +63,10 @@ int shell_help(char **args) {
     return 1; 
 }
 
+int shell_quit(char **args) {
+    return 0;
+}
+
 int launch_shell(char **args) {
     pid_t pid, wpid;
     int status;
@@ -157,7 +161,22 @@ char **split_line(char (*line)) {
     return tokens;
 }
 
-int shell_execute(char **args);
+int shell_execute(char **args) {
+    int i;
+
+    if (args[0] == NULL) {
+        // Empty command was entered
+        return 1;
+    }
+
+    for (i = 0; i < shell_num_builtins(); i++) {
+        if (strcmp(args[0], builtin_str[i]) == 0) {
+            return (*builtin_func[i])(args);
+        }
+    }
+
+    return launch_shell(args);
+}
 
 void shell_loop(void) {
     char *line;
