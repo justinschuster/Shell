@@ -52,11 +52,15 @@ int shell_cd(char **args) {
 
 int shell_help(char **args) {
     int i;
-    printf("Use the following builtin functions:\n");
+
+    printf("\nHELP\n");
+    printf("Use the following builtin functions:\n\n");
 
     for (i = 0; i < shell_num_builtins(); i++) {
         printf(" %s\n", builtin_str[i]);
     }
+
+    printf("\n");
 
     return 1; 
 }
@@ -176,7 +180,7 @@ int shell_execute(char **args) {
     return launch_shell(args);
 }
 
-void shell_loop(void) {
+void interactive_mode(void) {
     char *line;
     char **args;
     int status;
@@ -194,7 +198,12 @@ void shell_loop(void) {
 
 int main (int argc, char *argv[]) {
     
-    shell_loop(); 
+    if (argc == 1) {
+        interactive_mode();
+    } else {
+        printf("\nYou tried to run shell with arguments but only interactive mode is avaiable at this time\n");
+        printf("rerun shell with no arguments\n\n"); 
+    } 
       
 
     return 0;
