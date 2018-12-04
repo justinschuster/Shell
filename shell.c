@@ -52,6 +52,17 @@ int shell_cd(char **args) {
     return 1;
 }
 
+int shell_help(char **args) {
+    int i;
+    printf("Use the following builtin functions:\n");
+
+    for (i = 0; i < shell_num_builtins(); i++) {
+        printf(" %s\n", builtin_str[i]);
+    }
+
+    return 1; 
+}
+
 int launch_shell(char **args) {
     pid_t pid, wpid;
     int status;
