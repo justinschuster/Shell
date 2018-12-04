@@ -14,7 +14,7 @@
 int shell_cd(char **args);
 int shell_help(char **args);
 int shell_quit(char **args);
-int shell_barrier(char **args);
+
 
 /*
  * List of builtin commands, followed by their corresponding functions
@@ -23,14 +23,12 @@ char *builtin_str[] = {
     "cd",
     "help",
     "quit",
-    "barrier"
 };
 
 int (*builtin_func[]) (char **) = {
     &shell_cd,
     &shell_help,
     &shell_quit,
-    &shell_barrier
 };
 
 int shell_num_builtins() {
@@ -85,7 +83,7 @@ int launch_shell(char **args) {
     } else {
         // Parent
         do {
-            wpid = waitpid(pid, &status, WUNTRACED);
+           wpid = waitpid(pid, &status, WUNTRACED);
         } while (!WIFEXITED(status) && !WIFSIGNALED(status));
     }
 
@@ -187,7 +185,7 @@ void shell_loop(void) {
         printf("prompt> ");
         line = read_line();
         args = split_line(line);
-        status = 1;// shell_execute(args);
+        status = shell_execute(args);
 
         free(line);
         free (args);
