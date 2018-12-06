@@ -87,15 +87,10 @@ int launch_shell(char **args) {
     } else if (pid < 0) {
         // Error forking
         perror("shell");
-    } else if (!background) {
-        // Parent
-        do {
-           wpid = waitpid(pid, &status, WUNTRACED);
-            // !WIFEXITED(status) - if child hasnt terminated normally with exit
-            // !WIFSIGNALED(status) - child hasn't terminated because of a signal not handled
-        } while (!WIFEXITED(status) && !WIFSIGNALED(status)); 
-    } else {
-        waitpid(pid, &status, WNOHANG);
+    } 
+
+    if (!background) {
+        wpid = waitpid(pid, &status, WUNTRACED);
     }
 
     return 1;
