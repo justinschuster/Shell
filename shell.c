@@ -1,13 +1,28 @@
+#define _POSIX_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <sys/types.h>
 
 #define SH_RL_BUFSIZE 1024
 #define SH_TOK_BUFSIZE 64
 #define SH_TOK_DELIM " \t\r\n\a"
+
+
+
+// Shell pid, gpid 
+static pid_t SH_PID;
+static pid_t SH_PGID;
+
+pid_t pid;
+
+int no_prompt;
+
+
 
 /*
  * Function Declarations for builtin shell commands
@@ -16,6 +31,24 @@ int shell_cd(char **args);
 int shell_help(char **args);
 int shell_quit(char **args);
 
+
+
+// handler for SIGCHILD
+void signalHandler_child(int p) {
+    while (waitpid(-1, NULL, WNOHANG) > 0) {
+    }
+    printf("\n");
+}
+
+// handler for SIGINT
+void signalHandler_int(int p) {
+    
+    if (kill(pid, SIGTERM) == 0) {
+        no_prompt = 1;
+    } else {
+        printf("\n");
+    }
+} 
 
 /*
  * List of builtin commands, followed by their corresponding functions
@@ -71,7 +104,7 @@ int shell_quit(char **args) {
 }
 
 int launch_shell(char **args, int background) {
-    pid_t pid, wpid;
+    pid_t wpid; 
     int status; 
 
     pid = fork();
