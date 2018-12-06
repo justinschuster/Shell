@@ -18,6 +18,9 @@
 static pid_t SH_PID;
 static pid_t SH_PGID;
 
+struct sigaction act_child;
+struct sigaction act_int;
+
 pid_t pid;
 
 int no_prompt;
@@ -267,6 +270,21 @@ void interactive_mode(void) {
 }
 
 int main (int argc, char *argv[]) {
+    
+    no_prompt = 0;
+    pid = -10; // pid not possible
+
+    SH_PID = getpid();
+
+    act_child.sa_handler = signalHandler_child;
+    act_int.sa_handler = signalHandler_int;
+
+    sigaction(SIGCHLD, &act_child, 0);
+    sigaction(SIGINT, &act_int, 0);
+
+    // Create own process group
+    setpgid(SH_PID, SH_PID); // shell process is group leader
+    SH_PGID = getpgrp();
     
     if (argc == 1) {
         interactive_mode();
