@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <signal.h>
 
 #define SH_RL_BUFSIZE 1024
 #define SH_TOK_BUFSIZE 64
@@ -72,10 +73,12 @@ int shell_quit(char **args) {
 int launch_shell(char **args) {
     pid_t pid, wpid;
     int status;
+    int background = 0;
 
     pid = fork();
     if (pid == 0) {
-        // Child process
+        // Child process 
+            
         if (execvp(args[0], args) == -1) {
             perror("shell");
         }
@@ -84,11 +87,15 @@ int launch_shell(char **args) {
     } else if (pid < 0) {
         // Error forking
         perror("shell");
-    } else {
+    } else if (!background) {
         // Parent
         do {
            wpid = waitpid(pid, &status, WUNTRACED);
-        } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+            // !WIFEXITED(status) - if child hasnt terminated normally with exit
+            // !WIFSIGNALED(status) - child hasn't terminated because of a signal not handled
+        } while (!WIFEXITED(status) && !WIFSIGNALED(status)); 
+    } else {
+        waitpid(pid, &status, WNOHANG);
     }
 
     return 1;
@@ -135,6 +142,7 @@ char **split_line(char (*line)) {
     int buff_size = SH_TOK_BUFSIZE, position = 0;
     char **tokens = malloc(buff_size * sizeof(char *));
     char *token;
+    
 
     if (!tokens) {
         fprintf(stderr, "shell: allocation error\n");
@@ -159,7 +167,8 @@ char **split_line(char (*line)) {
         token = strtok(NULL, SH_TOK_DELIM);
     }
 
-    tokens[position] = NULL;
+    tokens[position] = NULL; 
+
     return tokens;
 }
 
