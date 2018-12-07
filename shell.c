@@ -24,6 +24,8 @@ struct sigaction act_int;
 pid_t pid;
 
 int no_prompt;
+int background;
+
 
 
 
@@ -106,13 +108,39 @@ int shell_quit(char **args) {
     return 0;
 }
 
-int launch_shell(char **args, int background) {
+int check_background(char **args) {
+    int arg_num = 0;  
+    char *last_token;
+    
+    while (args[arg_num] != NULL) { 
+        arg_num++;
+    } 
+    
+    last_token = args[arg_num-1]; 
+
+    printf("Char: %c\n", last_token[strlen(last_token)-1]);
+
+    printf("Arg_num: %d\n", arg_num);
+
+    if (last_token[strlen(last_token)-1] == '&') {
+        last_token[strlen(last_token)-1] = '\0';
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+int launch_shell(char **args) {
     pid_t wpid; 
-    int status; 
+    int status;
+    
+    if (!background) {
+        background = check_background(args); 
+    } 
 
     pid = fork();
     if (pid == 0) {
-        // Child process  
+        // Child process   
             
         if (execvp(args[0], args) == -1) {
             perror("shell");
@@ -181,7 +209,7 @@ char **split_line(char (*line)) {
 
     token = strtok(line, SH_TOK_DELIM);
     while (token != NULL) {
-        tokens[position] = token;
+        tokens[position] = token; 
         position++;
 
         if (position >= buff_size) {
@@ -203,7 +231,6 @@ char **split_line(char (*line)) {
 }
 
 int shell_execute(char **args) {
-    int background = 0;
     int i = 0;
     int j = 0;
 
@@ -223,34 +250,15 @@ int shell_execute(char **args) {
         j++;
     } 
 
-    /*for (i = 0; i < shell_num_builtins(); i++) {
-        if (strcmp(args[0], builtin_str[i]) == 0) {
-            return (*builtin_func[i])(args);
-        }
-    }*/
-
     // quit end shell 
     if (strcmp(args[0], "quit") == 0) return shell_quit(args);
     // help returns list of builtin functions
     else if (strcmp(args[0], "help") == 0) return shell_help(args);
     // cd changes the directory
-    else if (strcmp(args[0], "cd") == 0) return shell_cd(args);
-    // args[0] is not a builtin function
-    else {
-        while (args[i] != NULL && background == 0) {
-            if (strcmp(args[i], "&") == 0) {
-                // Change background flag
-                // Because & is last thing on command line end loop
-                background = 1;
-            }
-
-            i++;
-        }
-        
-    }
+    else if (strcmp(args[0], "cd") == 0) return shell_cd(args); 
     args_copy[i] = NULL;
 
-    return launch_shell(args, background);
+    return launch_shell(args);
 }
 
 void interactive_mode(void) {
@@ -261,7 +269,7 @@ void interactive_mode(void) {
     do {
         printf("prompt> ");
         line = read_line();
-        args = split_line(line);
+        args = split_line(line); 
         status = shell_execute(args);
 
         free(line);
@@ -272,6 +280,8 @@ void interactive_mode(void) {
 int main (int argc, char *argv[]) {
     
     no_prompt = 0;
+    background = 0;
+
     pid = -10; // pid not possible
 
     SH_PID = getpid();
@@ -284,7 +294,12 @@ int main (int argc, char *argv[]) {
 
     // Create own process group
     setpgid(SH_PID, SH_PID); // shell process is group leader
+
     SH_PGID = getpgrp();
+    if (SH_PID != SH_PGID) {
+        perror("Shell is not process group leader");
+        exit(EXIT_FAILURE);
+    }
     
     if (argc == 1) {
         interactive_mode();
