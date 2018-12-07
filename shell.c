@@ -12,22 +12,17 @@
 #define SH_TOK_BUFSIZE 64
 #define SH_TOK_DELIM " \t\r\n\a"
 
-
-
 // Shell pid, gpid 
 static pid_t SH_PID;
 static pid_t SH_PGID;
+pid_t pid;
 
 struct sigaction act_child;
 struct sigaction act_int;
 
-pid_t pid;
-
+// Global flags
 int no_prompt;
 int background;
-
-
-
 
 /*
  * Function Declarations for builtin shell commands
@@ -35,8 +30,6 @@ int background;
 int shell_cd(char **args);
 int shell_help(char **args);
 int shell_quit(char **args);
-
-
 
 // handler for SIGCHILD
 void signalHandler_child(int p) {
@@ -77,6 +70,7 @@ int shell_num_builtins() {
 /*
  * Builtin function implementations
  */
+// Changes Directory like normal cd
 int shell_cd(char **args) {
     if (args[1] == NULL) {
         fprintf(stderr, "shell: expected argument to \"cd\"\n");
@@ -89,12 +83,16 @@ int shell_cd(char **args) {
     return 1;
 }
 
+/* TODO */
+// Displays the builtin functions
+// Probably should add more information about each function
 int shell_help(char **args) {
     int i;
 
     printf("\nHELP\n");
     printf("Use the following builtin functions:\n\n");
 
+    // Print name of builtin functions
     for (i = 0; i < shell_num_builtins(); i++) {
         printf(" %s\n", builtin_str[i]);
     }
@@ -104,6 +102,7 @@ int shell_help(char **args) {
     return 1; 
 }
 
+// Quits shell obviously
 int shell_quit(char **args) {
     return 0;
 }
@@ -129,6 +128,7 @@ int check_background(char **args) {
     }
 }
 
+// Creates child processes to execute non builtin commands
 int launch_shell(char **args) {
     pid_t wpid; 
     int status;
@@ -138,6 +138,7 @@ int launch_shell(char **args) {
     } 
 
     pid = fork();
+
     if (pid == 0) {
         // Child process   
            
@@ -150,6 +151,7 @@ int launch_shell(char **args) {
     } else if (pid < 0) {
         // Error forking
         perror("shell");
+        exit(EXIT_FAILURE);
     } 
     
     // if background flag not set we wait for process to finish
@@ -160,6 +162,7 @@ int launch_shell(char **args) {
     return 1;
 }
 
+// Reads in line from shell so we can parse it
 char *read_line(void) {
     int buff_size = SH_RL_BUFSIZE;
     int position = 0;
@@ -197,6 +200,7 @@ char *read_line(void) {
     }
 }
 
+// Parses line into tokens. Prob could give it more descriptive name
 char **split_line(char (*line)) {
     int buff_size = SH_TOK_BUFSIZE, position = 0;
     char **tokens = malloc(buff_size * sizeof(char *));
@@ -231,6 +235,9 @@ char **split_line(char (*line)) {
     return tokens;
 }
 
+/* TODO */
+// Executes builtin functions or returns non builtin function calls
+// Need to add redirection functionality
 int shell_execute(char **args) {
     int i = 0;
     int j = 0;
@@ -241,7 +248,8 @@ int shell_execute(char **args) {
         // Empty command was entered
         return 1;
     }
-    
+   
+    // Need to add ">" and "<" implementation 
     while (args[j] != NULL) {
         if ((strcmp(args[j], "&")) == 0) {
             break;
@@ -272,9 +280,11 @@ int shell_execute(char **args) {
     }
     args_copy[i] = NULL;
 
+    // Prob should change this to args_copy[i]
     return launch_shell(args);
 }
 
+// Interactive Mode's main loop
 void interactive_mode(void) {
     char *line;
     char **args;
