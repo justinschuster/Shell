@@ -108,20 +108,19 @@ int shell_quit(char **args) {
     return 0;
 }
 
+// Check to see if & is at the end of final token but not alone in the token
+// Returns 1 when we find the background flag
 int check_background(char **args) {
     int arg_num = 0;  
     char *last_token;
-    
+   
+    // get the number of arguments
     while (args[arg_num] != NULL) { 
         arg_num++;
     } 
     
+    // Compare & with last character of last token then handle accordingly
     last_token = args[arg_num-1]; 
-
-    printf("Char: %c\n", last_token[strlen(last_token)-1]);
-
-    printf("Arg_num: %d\n", arg_num);
-
     if (last_token[strlen(last_token)-1] == '&') {
         last_token[strlen(last_token)-1] = '\0';
         return 1;
@@ -141,7 +140,8 @@ int launch_shell(char **args) {
     pid = fork();
     if (pid == 0) {
         // Child process   
-            
+           
+        // Execute not builtin function
         if (execvp(args[0], args) == -1) {
             perror("shell");
         }
@@ -151,7 +151,8 @@ int launch_shell(char **args) {
         // Error forking
         perror("shell");
     } 
-
+    
+    // if background flag not set we wait for process to finish
     if (!background) {
         wpid = waitpid(pid, &status, WUNTRACED);
     }
@@ -255,7 +256,20 @@ int shell_execute(char **args) {
     // help returns list of builtin functions
     else if (strcmp(args[0], "help") == 0) return shell_help(args);
     // cd changes the directory
-    else if (strcmp(args[0], "cd") == 0) return shell_cd(args); 
+    else if (strcmp(args[0], "cd") == 0) return shell_cd(args);     
+    // args[0] is not a builtin function
+    else {
+        while (args[i] != NULL && background == 0) {
+            if (strcmp(args[i], "&") == 0) {
+                // Change background flag
+                // & should be last thing in command line end loop
+                background = 1;
+                args[i] = NULL;
+            }
+
+            i++;
+        }
+    }
     args_copy[i] = NULL;
 
     return launch_shell(args);
@@ -274,6 +288,7 @@ void interactive_mode(void) {
 
         free(line);
         free (args);
+        background = 0;
     } while (status);
 }
 
