@@ -1,4 +1,4 @@
-#define _POSIX_SOURCE
+#define _POSIX_SOURCE 200112L
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <sys/types.h>
+#include <fcntl.h>
 
 #define SH_RL_BUFSIZE 1024
 #define SH_TOK_BUFSIZE 64
@@ -35,7 +36,6 @@ int shell_quit(char **args);
 void signalHandler_child(int p) {
     while (waitpid(-1, NULL, WNOHANG) > 0) {
     }
-    printf("\n");
 }
 
 // handler for SIGINT
@@ -129,8 +129,7 @@ int check_background(char **args) {
 }
 
 // Creates child processes to execute non builtin commands
-int launch_shell(char **args) {
-    pid_t wpid; 
+int launch_shell(char **args) { 
     int status;
     
     if (!background) {
@@ -156,7 +155,7 @@ int launch_shell(char **args) {
     
     // if background flag not set we wait for process to finish
     if (!background) {
-        wpid = waitpid(pid, &status, WUNTRACED);
+        waitpid(pid, &status, WUNTRACED);
     }
 
     return 1;
@@ -235,12 +234,55 @@ char **split_line(char (*line)) {
     return tokens;
 }
 
+void redirection(char *args[], char *in_file, char *out_file) {
+    int fd;
+    char *args_copy[256]; 
+
+    int j = 0;
+    while (args[j] != NULL) {
+        if (strcmp(args[j], ">") == 0 || (strcmp(args[j], "&")) == 0) {
+            break;
+        }   
+
+        args_copy[j] = args[j];
+        j++;
+    }
+
+    pid = fork();
+    if (pid == 0) {
+        // Child Process
+       
+        // Open corresponding file and truncate its length to 0
+        fd = open(out_file, O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        if (fd < 0) {
+            perror("open");
+            exit(EXIT_FAILURE);
+        }
+
+        // Redirect command line output into file
+        dup2(fd, STDOUT_FILENO);
+        close(fd); 
+
+        // Run the corresponding command
+        if (execvp(args[0], args_copy) == -1) { 
+            perror("execvp"); 
+            kill(getpid(), SIGTERM);
+        }
+
+    } else if (pid < 0) { 
+        // Error forking
+        perror("shell");
+        exit(EXIT_FAILURE);
+    }
+
+    waitpid(pid, NULL, 0);
+}
 /* TODO */
 // Executes builtin functions or returns non builtin function calls
 // Need to add redirection functionality
 int shell_execute(char **args) {
     int i = 0;
-    int j = 0;
+    //int j = 0; 
 
     char *args_copy[256];
 
@@ -250,14 +292,13 @@ int shell_execute(char **args) {
     }
    
     // Need to add ">" and "<" implementation 
-    while (args[j] != NULL) {
-        if ((strcmp(args[j], "&")) == 0) {
+    /*while (args[j] != NULL) {
+        if (strcmp(args[j], ">") == 0 || (strcmp(args[j], "&")) == 0) {
             break;
-        }
-        
+        }   
         args_copy[j] = args[j];
         j++;
-    } 
+    } */
 
     // quit end shell 
     if (strcmp(args[0], "quit") == 0) return shell_quit(args);
@@ -273,12 +314,18 @@ int shell_execute(char **args) {
                 // & should be last thing in command line end loop
                 background = 1;
                 args[i] = NULL;
+            } else if (strcmp(args[i], ">") == 0) {
+                if (args[i+1] == NULL) {
+                    printf("No pathname\n");
+                    return -1;
+                } 
+                redirection(args, NULL, args[i+1]);
+                return 1;
             }
-
             i++;
         }
     }
-    args_copy[i] = NULL;
+    //args_copy[i] = NULL;
 
     // Prob should change this to args_copy[i]
     return launch_shell(args);
