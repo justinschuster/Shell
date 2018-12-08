@@ -1,385 +1,70 @@
-#define _POSIX_SOURCE 200112L
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/wait.h>
-#include <signal.h>
 #include <sys/types.h>
-#include <fcntl.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <termios.h>
 
-#define SH_RL_BUFSIZE 1024
-#define SH_TOK_BUFSIZE 64
-#define SH_TOK_DELIM " \t\r\n\a"
+/* A process object is a single process */
+typedef struct process {
+    struct process *next;   /* next process in the pipeline */
+    char **argv;            /*for exec */
+    pid_t pid;              /* process ID */
+    char completed;         /* true if process has completed */
+    char stopped;           /* true if process has stopped */
+    int status;             /* reported status value */
+} process;
 
-// Shell pid, gpid 
-static pid_t SH_PID;
-static pid_t SH_PGID;
-pid_t pid;
+/* A job is a pipeline of process */
+typedef struct job {
+    struct job *next;           /* next active job */
+    char *command;              /* command line, used for messages */
+    process *first_process;     /* list of processes in this job */
+    pid_t pgid;                 /* process group ID */
+    char notified;              /* true if user told about stopped job */
+    struct termios tmodes;      /* saved terminal modes */
+    int stdin, stdout, stderr;  /* standard i/o channels */
+} job;
 
-struct sigaction act_child;
-struct sigaction act_int;
+/* The active jobs are linked into a list. This is its head */
+job *first_job = NULL;
 
-// Global flags
-int no_prompt;
-int background;
+/* Find the active job with the indicated pgid */
+job *find_job (pid_t pgid) {
+    job *j;
 
-/*
- * Function Declarations for builtin shell commands
- */
-int shell_cd(char **args);
-int shell_help(char **args);
-int shell_quit(char **args);
-
-// handler for SIGCHILD
-void signalHandler_child(int p) {
-    while (waitpid(-1, NULL, WNOHANG) > 0) {
+    for (j = first_job; j; j = j->next) {
+        if (j->pgid == pgid) {
+            return j;
+        }
     }
+
+    return NULL;
 }
 
-// handler for SIGINT
-void signalHandler_int(int p) {
-    
-    if (kill(pid, SIGTERM) == 0) {
-        no_prompt = 1;
-    } else {
-        printf("\n");
-    }
-} 
+/* Return true if all processes in the job have stopped or completed */
+int job_is_stopped (job *j) {
+    process *p;
 
-/*
- * List of builtin commands, followed by their corresponding functions
- */
-char *builtin_str[] = {
-    "cd",
-    "help",
-    "quit",
-};
-
-int (*builtin_func[]) (char **) = {
-    &shell_cd,
-    &shell_help,
-    &shell_quit,
-};
-
-int shell_num_builtins() {
-    return sizeof(builtin_str) / sizeof(char *);
-}
-
-/*
- * Builtin function implementations
- */
-// Changes Directory like normal cd
-int shell_cd(char **args) {
-    if (args[1] == NULL) {
-        fprintf(stderr, "shell: expected argument to \"cd\"\n");
-    } else {
-        if (chdir(args[1]) != 0) {
-            perror("shell");
+    for (p = j->first_process; p; p = p->next) {
+        if (!p->completed && !p->stopped) {
+            return 0;
         }
     }
 
     return 1;
 }
 
-/* TODO */
-// Displays the builtin functions
-// Probably should add more information about each function
-int shell_help(char **args) {
-    int i;
+/* Return true if all processes in the job have completed */
+int job_is_completed (job *j) {
+    process *p;
 
-    printf("\nHELP\n");
-    printf("Use the following builtin functions:\n\n");
-
-    // Print name of builtin functions
-    for (i = 0; i < shell_num_builtins(); i++) {
-        printf(" %s\n", builtin_str[i]);
-    }
-
-    printf("\n");
-
-    return 1; 
-}
-
-// Quits shell obviously
-int shell_quit(char **args) {
-    return 0;
-}
-
-// Check to see if & is at the end of final token but not alone in the token
-// Returns 1 when we find the background flag
-int check_background(char **args) {
-    int arg_num = 0;  
-    char *last_token;
-   
-    // get the number of arguments
-    while (args[arg_num] != NULL) { 
-        arg_num++;
-    } 
-    
-    // Compare & with last character of last token then handle accordingly
-    last_token = args[arg_num-1]; 
-    if (last_token[strlen(last_token)-1] == '&') {
-        last_token[strlen(last_token)-1] = '\0';
-        return 1;
-    } else {
-        return 0;
-    }
-}
-
-// Creates child processes to execute non builtin commands
-int launch_shell(char **args) { 
-    int status;
-    
-    if (!background) {
-        background = check_background(args); 
-    } 
-
-    pid = fork();
-
-    if (pid == 0) {
-        // Child process   
-           
-        // Execute not builtin function
-        if (execvp(args[0], args) == -1) {
-            perror("shell");
+    for (p = j->first_process; p; p = p->next) {
+        if (!p->completed) {
+            return 0;
         }
-
-        exit(EXIT_FAILURE);
-    } else if (pid < 0) {
-        // Error forking
-        perror("shell");
-        exit(EXIT_FAILURE);
-    } 
-    
-    // if background flag not set we wait for process to finish
-    if (!background) {
-        waitpid(pid, &status, WUNTRACED);
     }
 
     return 1;
 }
 
-// Reads in line from shell so we can parse it
-char *read_line(void) {
-    int buff_size = SH_RL_BUFSIZE;
-    int position = 0;
-    char *buffer = malloc(sizeof(char) *buff_size);
-    int c;
 
-    if(!buffer) {
-        fprintf(stderr, "shell: allocation error\n");
-        exit(EXIT_FAILURE);
-    }
-
-    // Read a character
-    while (1) {
-        c = getchar();
-
-        // IF EOF replace with a null char and return
-        if (c == EOF || c == '\n') {
-            buffer[position] = '\0';
-            return buffer;
-        } else {
-            buffer[position] = c;
-        }
-        position++;
-
-        // If we have exceeded the buffer, reallocate
-        if (position >= buff_size) {
-            buff_size += SH_RL_BUFSIZE;
-            buffer = realloc(buffer, buff_size);
-
-            if (!buffer) {
-                fprintf(stderr, "shell: allocate error\n");
-                exit(EXIT_FAILURE);
-            }
-        }
-    }
-}
-
-// Parses line into tokens. Prob could give it more descriptive name
-char **split_line(char (*line)) {
-    int buff_size = SH_TOK_BUFSIZE, position = 0;
-    char **tokens = malloc(buff_size * sizeof(char *));
-    char *token;
-    
-
-    if (!tokens) {
-        fprintf(stderr, "shell: allocation error\n");
-        exit(EXIT_FAILURE);
-    }
-
-    token = strtok(line, SH_TOK_DELIM);
-    while (token != NULL) {
-        tokens[position] = token; 
-        position++;
-
-        if (position >= buff_size) {
-            buff_size += SH_TOK_BUFSIZE;
-            tokens = realloc(tokens, buff_size * sizeof(char *));
-
-            if (!tokens) {
-                fprintf(stderr, "shell: allocation error\n");
-                exit(EXIT_FAILURE);
-            }
-        }
-
-        token = strtok(NULL, SH_TOK_DELIM);
-    }
-
-    tokens[position] = NULL; 
-
-    return tokens;
-}
-
-void redirection(char *args[], char *in_file, char *out_file) {
-    int fd;
-    char *args_copy[256]; 
-
-    int j = 0;
-    while (args[j] != NULL) {
-        if (strcmp(args[j], ">") == 0 || (strcmp(args[j], "&")) == 0) {
-            break;
-        }   
-
-        args_copy[j] = args[j];
-        j++;
-    }
-
-    pid = fork();
-    if (pid == 0) {
-        // Child Process
-       
-        // Open corresponding file and truncate its length to 0
-        fd = open(out_file, O_CREAT | O_TRUNC | O_WRONLY, 0600);
-        if (fd < 0) {
-            perror("open");
-            exit(EXIT_FAILURE);
-        }
-
-        // Redirect command line output into file
-        dup2(fd, STDOUT_FILENO);
-        close(fd); 
-
-        // Run the corresponding command
-        if (execvp(args[0], args_copy) == -1) { 
-            perror("execvp"); 
-            kill(getpid(), SIGTERM);
-        }
-
-    } else if (pid < 0) { 
-        // Error forking
-        perror("shell");
-        exit(EXIT_FAILURE);
-    }
-
-    waitpid(pid, NULL, 0);
-}
-/* TODO */
-// Executes builtin functions or returns non builtin function calls
-// Need to add redirection functionality
-int shell_execute(char **args) {
-    int i = 0;
-    //int j = 0; 
-
-    char *args_copy[256];
-
-    if (args[0] == NULL) {
-        // Empty command was entered
-        return 1;
-    }
-   
-    // Need to add ">" and "<" implementation 
-    /*while (args[j] != NULL) {
-        if (strcmp(args[j], ">") == 0 || (strcmp(args[j], "&")) == 0) {
-            break;
-        }   
-        args_copy[j] = args[j];
-        j++;
-    } */
-
-    // quit end shell 
-    if (strcmp(args[0], "quit") == 0) return shell_quit(args);
-    // help returns list of builtin functions
-    else if (strcmp(args[0], "help") == 0) return shell_help(args);
-    // cd changes the directory
-    else if (strcmp(args[0], "cd") == 0) return shell_cd(args);     
-    // args[0] is not a builtin function
-    else {
-        while (args[i] != NULL && background == 0) {
-            if (strcmp(args[i], "&") == 0) {
-                // Change background flag
-                // & should be last thing in command line end loop
-                background = 1;
-                args[i] = NULL;
-            } else if (strcmp(args[i], ">") == 0) {
-                if (args[i+1] == NULL) {
-                    printf("No pathname\n");
-                    return -1;
-                } 
-                redirection(args, NULL, args[i+1]);
-                return 1;
-            }
-            i++;
-        }
-    }
-    //args_copy[i] = NULL;
-
-    // Prob should change this to args_copy[i]
-    return launch_shell(args);
-}
-
-// Interactive Mode's main loop
-void interactive_mode(void) {
-    char *line;
-    char **args;
-    int status;
-
-    do {
-        printf("prompt> ");
-        line = read_line();
-        args = split_line(line); 
-        status = shell_execute(args);
-
-        free(line);
-        free (args);
-        background = 0;
-    } while (status);
-}
-
-int main (int argc, char *argv[]) {
-    
-    no_prompt = 0;
-    background = 0;
-
-    pid = -10; // pid not possible
-
-    SH_PID = getpid();
-
-    act_child.sa_handler = signalHandler_child;
-    act_int.sa_handler = signalHandler_int;
-
-    sigaction(SIGCHLD, &act_child, 0);
-    sigaction(SIGINT, &act_int, 0);
-
-    // Create own process group
-    setpgid(SH_PID, SH_PID); // shell process is group leader
-
-    SH_PGID = getpgrp();
-    if (SH_PID != SH_PGID) {
-        perror("Shell is not process group leader");
-        exit(EXIT_FAILURE);
-    }
-    
-    if (argc == 1) {
-        interactive_mode();
-    } else {
-        printf("\nYou tried to run shell with arguments but only interactive mode is avaiable at this time\n");
-        printf("rerun shell with no arguments\n\n"); 
-    } 
-      
-
-    return 0;
-}
