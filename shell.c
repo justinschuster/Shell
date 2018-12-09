@@ -1,378 +1,385 @@
-#define _POSIX_SOURCE 200112L 
+#define _POSIX_SOURCE 200112L
 
-#include <sys/types.h>
-#include <unistd.h>
-#include <stdlib.h>
 #include <stdio.h>
-#include <termios.h>
-#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include <sys/wait.h>
-#include <errno.h>
+#include <signal.h>
+#include <sys/types.h>
 #include <fcntl.h>
 
-/* A process object is a single process */
-typedef struct process {
-    struct process *next;   /* next process in the pipeline */
-    char **argv;            /*for exec */
-    pid_t pid;              /* process ID */
-    char completed;         /* true if process has completed */
-    char stopped;           /* true if process has stopped */
-    int status;             /* reported status value */
-} process;
+#define SH_RL_BUFSIZE 1024
+#define SH_TOK_BUFSIZE 64
+#define SH_TOK_DELIM " \t\r\n\a"
 
-/* A job is a pipeline of process */
-typedef struct job {
-    struct job *next;           /* next active job */
-    char *command;              /* command line, used for messages */
-    process *first_process;     /* list of processes in this job */
-    pid_t pgid;                 /* process group ID */
-    char notified;              /* true if user told about stopped job */
-    struct termios tmodes;      /* saved terminal modes */
-    int stdin, stdout, stderr;  /* standard i/o channels */
-} job;
+// Shell pid, gpid 
+static pid_t SH_PID;
+static pid_t SH_PGID;
+pid_t pid;
 
-pid_t shell_pgid;
-struct termios shell_tmodes;
-int shell_terminal;
-int shell_is_interactive;
+struct sigaction act_child;
+struct sigaction act_int;
 
-/* The active jobs are linked into a list. This is its head */
-job *first_job = NULL;
+// Global flags
+int no_prompt;
+int background;
 
-/* Find the active job with the indicated pgid */
-job *find_job (pid_t pgid) {
-    job *j;
+/*
+ * Function Declarations for builtin shell commands
+ */
+int shell_cd(char **args);
+int shell_help(char **args);
+int shell_quit(char **args);
 
-    for (j = first_job; j; j = j->next) {
-        if (j->pgid == pgid) {
-            return j;
-        }
+// handler for SIGCHILD
+void signalHandler_child(int p) {
+    while (waitpid(-1, NULL, WNOHANG) > 0) {
     }
-
-    return NULL;
 }
 
-/* Return true if all processes in the job have stopped or completed */
-int job_is_stopped (job *j) {
-    process *p;
+// handler for SIGINT
+void signalHandler_int(int p) {
+    
+    if (kill(pid, SIGTERM) == 0) {
+        no_prompt = 1;
+    } else {
+        printf("\n");
+    }
+} 
 
-    for (p = j->first_process; p; p = p->next) {
-        if (!p->completed && !p->stopped) {
-            return 0;
+/*
+ * List of builtin commands, followed by their corresponding functions
+ */
+char *builtin_str[] = {
+    "cd",
+    "help",
+    "quit",
+};
+
+int (*builtin_func[]) (char **) = {
+    &shell_cd,
+    &shell_help,
+    &shell_quit,
+};
+
+int shell_num_builtins() {
+    return sizeof(builtin_str) / sizeof(char *);
+}
+
+/*
+ * Builtin function implementations
+ */
+// Changes Directory like normal cd
+int shell_cd(char **args) {
+    if (args[1] == NULL) {
+        fprintf(stderr, "shell: expected argument to \"cd\"\n");
+    } else {
+        if (chdir(args[1]) != 0) {
+            perror("shell");
         }
     }
 
     return 1;
 }
 
-/* Return true if all processes in the job have completed */
-int job_is_completed (job *j) {
-    process *p;
+/* TODO */
+// Displays the builtin functions
+// Probably should add more information about each function
+int shell_help(char **args) {
+    int i;
 
-    for (p = j->first_process; p; p = p->next) {
-        if (!p->completed) {
-            return 0;
+    printf("\nHELP\n");
+    printf("Use the following builtin functions:\n\n");
+
+    // Print name of builtin functions
+    for (i = 0; i < shell_num_builtins(); i++) {
+        printf(" %s\n", builtin_str[i]);
+    }
+
+    printf("\n");
+
+    return 1; 
+}
+
+// Quits shell obviously
+int shell_quit(char **args) {
+    return 0;
+}
+
+// Check to see if & is at the end of final token but not alone in the token
+// Returns 1 when we find the background flag
+int check_background(char **args) {
+    int arg_num = 0;  
+    char *last_token;
+   
+    // get the number of arguments
+    while (args[arg_num] != NULL) { 
+        arg_num++;
+    } 
+    
+    // Compare & with last character of last token then handle accordingly
+    last_token = args[arg_num-1]; 
+    if (last_token[strlen(last_token)-1] == '&') {
+        last_token[strlen(last_token)-1] = '\0';
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+// Creates child processes to execute non builtin commands
+int launch_shell(char **args) { 
+    int status;
+    
+    if (!background) {
+        background = check_background(args); 
+    } 
+
+    pid = fork();
+
+    if (pid == 0) {
+        // Child process   
+           
+        // Execute not builtin function
+        if (execvp(args[0], args) == -1) {
+            perror("shell");
         }
+
+        exit(EXIT_FAILURE);
+    } else if (pid < 0) {
+        // Error forking
+        perror("shell");
+        exit(EXIT_FAILURE);
+    } 
+    
+    // if background flag not set we wait for process to finish
+    if (!background) {
+        waitpid(pid, &status, WUNTRACED);
     }
 
     return 1;
 }
 
-int mark_process_status(pid_t pid, int status) {
-    job *j;
-    process *p;
+// Reads in line from shell so we can parse it
+char *read_line(void) {
+    int buff_size = SH_RL_BUFSIZE;
+    int position = 0;
+    char *buffer = malloc(sizeof(char) *buff_size);
+    int c;
 
-    if (pid > 0) {
-        /* Update the record for the process */
-        for (j = first_job; j; j = j->next) {
-            for (p = j->first_process; p; p = p->next) {
-                if (p->pid == pid) {
-                    p->status = status;
-                    if (WIFSTOPPED(status)) {
-                        p->stopped = 1;
-                    } else {
-                        p->completed = 1;
-                        if (WIFSIGNALED(status)) {
-                            fprintf(stderr, "%d: Terminated by signal %d.\n", (int)pid, WTERMSIG (p->status));
-                        }
-                    }
-                    return 0;
-                }
+    if(!buffer) {
+        fprintf(stderr, "shell: allocation error\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Read a character
+    while (1) {
+        c = getchar();
+
+        // IF EOF replace with a null char and return
+        if (c == EOF || c == '\n') {
+            buffer[position] = '\0';
+            return buffer;
+        } else {
+            buffer[position] = c;
+        }
+        position++;
+
+        // If we have exceeded the buffer, reallocate
+        if (position >= buff_size) {
+            buff_size += SH_RL_BUFSIZE;
+            buffer = realloc(buffer, buff_size);
+
+            if (!buffer) {
+                fprintf(stderr, "shell: allocate error\n");
+                exit(EXIT_FAILURE);
             }
         }
-        fprintf(stderr, "No child process %d.\n", pid);
-        return -1;
-    } else if (pid == 0 || errno == ECHILD) {
-        /* No process ready to report */
-        return -1;
-    } else {
-        /* Other weird errors */
-        perror("waitpid");
-        return -1;
     }
 }
 
-/* Check for processes that have status information availabe without blocking */
-void update_status(void) {
+// Parses line into tokens. Prob could give it more descriptive name
+char **split_line(char (*line)) {
+    int buff_size = SH_TOK_BUFSIZE, position = 0;
+    char **tokens = malloc(buff_size * sizeof(char *));
+    char *token;
+    
+
+    if (!tokens) {
+        fprintf(stderr, "shell: allocation error\n");
+        exit(EXIT_FAILURE);
+    }
+
+    token = strtok(line, SH_TOK_DELIM);
+    while (token != NULL) {
+        tokens[position] = token; 
+        position++;
+
+        if (position >= buff_size) {
+            buff_size += SH_TOK_BUFSIZE;
+            tokens = realloc(tokens, buff_size * sizeof(char *));
+
+            if (!tokens) {
+                fprintf(stderr, "shell: allocation error\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        token = strtok(NULL, SH_TOK_DELIM);
+    }
+
+    tokens[position] = NULL; 
+
+    return tokens;
+}
+
+void redirection(char *args[], char *in_file, char *out_file) {
+    int fd;
+    char *args_copy[256]; 
+
+    int j = 0;
+    while (args[j] != NULL) {
+        if (strcmp(args[j], ">") == 0 || (strcmp(args[j], "&")) == 0) {
+            break;
+        }   
+
+        args_copy[j] = args[j];
+        j++;
+    }
+
+    pid = fork();
+    if (pid == 0) {
+        // Child Process
+       
+        // Open corresponding file and truncate its length to 0
+        fd = open(out_file, O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        if (fd < 0) {
+            perror("open");
+            exit(EXIT_FAILURE);
+        }
+
+        // Redirect command line output into file
+        dup2(fd, STDOUT_FILENO);
+        close(fd); 
+
+        // Run the corresponding command
+        if (execvp(args[0], args_copy) == -1) { 
+            perror("execvp"); 
+            kill(getpid(), SIGTERM);
+        }
+
+    } else if (pid < 0) { 
+        // Error forking
+        perror("shell");
+        exit(EXIT_FAILURE);
+    }
+
+    waitpid(pid, NULL, 0);
+}
+/* TODO */
+// Executes builtin functions or returns non builtin function calls
+// Need to add redirection functionality
+int shell_execute(char **args) {
+    int i = 0;
+    //int j = 0; 
+
+    char *args_copy[256];
+
+    if (args[0] == NULL) {
+        // Empty command was entered
+        return 1;
+    }
+   
+    // Need to add ">" and "<" implementation 
+    /*while (args[j] != NULL) {
+        if (strcmp(args[j], ">") == 0 || (strcmp(args[j], "&")) == 0) {
+            break;
+        }   
+        args_copy[j] = args[j];
+        j++;
+    } */
+
+    // quit end shell 
+    if (strcmp(args[0], "quit") == 0) return shell_quit(args);
+    // help returns list of builtin functions
+    else if (strcmp(args[0], "help") == 0) return shell_help(args);
+    // cd changes the directory
+    else if (strcmp(args[0], "cd") == 0) return shell_cd(args);     
+    // args[0] is not a builtin function
+    else {
+        while (args[i] != NULL && background == 0) {
+            if (strcmp(args[i], "&") == 0) {
+                // Change background flag
+                // & should be last thing in command line end loop
+                background = 1;
+                args[i] = NULL;
+            } else if (strcmp(args[i], ">") == 0) {
+                if (args[i+1] == NULL) {
+                    printf("No pathname\n");
+                    return -1;
+                } 
+                redirection(args, NULL, args[i+1]);
+                return 1;
+            }
+            i++;
+        }
+    }
+    //args_copy[i] = NULL;
+
+    // Prob should change this to args_copy[i]
+    return launch_shell(args);
+}
+
+// Interactive Mode's main loop
+void interactive_mode(void) {
+    char *line;
+    char **args;
     int status;
-    pid_t pid;
 
     do {
-        pid = waitpid(WAIT_ANY, &status, WUNTRACED(WNOHANG));
-    } while (!mark_process_status(pid, status));
+        printf("prompt> ");
+        line = read_line();
+        args = split_line(line); 
+        status = shell_execute(args);
+
+        free(line);
+        free (args);
+        background = 0;
+    } while (status);
 }
 
-/* Check for processes that have status information available
- * blocking until all processes in the given job have reported */
-void wait_for_job(job *j) {
-    int status;
-    pid_t pid;
+int main (int argc, char *argv[]) {
+    
+    no_prompt = 0;
+    background = 0;
 
-    do {
-        pid = waitpid(WAIT_ANY, &status, WUNTRACED);
-    } while (!mark_process_status(pid, status) && !job_is_stopped(j) && !job_is_completed(j));
-}
+    pid = -10; // pid not possible
 
-void format_job_info(job *j, const char *status) {
-    fprintf(stderr, "%ld (%s): %s\n", (long)j->pgid, status, j->command);
-}
+    SH_PID = getpid();
 
-/* Notify the user about the stopped or terminated jobs.
- * Delete terminated jobs from the active job list */
-void do_job_notification(void) {
-    job *j, *jlast, *jnext;
-    process *p;
+    act_child.sa_handler = signalHandler_child;
+    act_int.sa_handler = signalHandler_int;
 
-    /* Update the status information for the child process */
-    update_status();
+    sigaction(SIGCHLD, &act_child, 0);
+    sigaction(SIGINT, &act_int, 0);
 
-    jlast = NULL;
-    for (j = first_job; j; j = jnext) {
-        jnext = j->next;
+    // Create own process group
+    setpgid(SH_PID, SH_PID); // shell process is group leader
 
-        /* If all proceesses have completed tell the user the job has
-         * completed and delete it from the list of active jobs */
-        if (job_is_completed(j)) {
-            format_job_info(j, "completed");
-            if (jlast) {
-                jlast->next = jnext;
-            } else {
-                first_job = jnext;
-            }
-            free_job();
-        } else if (job_is_stopped(j) && !j->notified) {
-            /* Notify the user about stopped jobs  marking them so that
-            * we won't do this more than once */
-            format_job_info(j, "stopped");
-            j->notified = 1;
-            jlast = j; 
-        } else {
-            /* Don't say anything about jobs that are still running */
-            jlast = j;
-        }
+    SH_PGID = getpgrp();
+    if (SH_PID != SH_PGID) {
+        perror("Shell is not process group leader");
+        exit(EXIT_FAILURE);
     }
-}
-
-/* Put job j in the foreground, If cont is nonzero
- * restore the saved terminal nodes and send the process group a 
- * SIGCONT signal to wake it up before we block. */
-void put_job_in_foreground(job *j, int cont) {
-    /* Put the job into the foreground */
-    tcsetpgrp(shell_terminal, j->pgid);
-
-    /* Send the job a continue signal, if necessary */
-    if (cont) {
-        tcsetattr(shell_terminal, TCSADRAIN, &j->tmodes);
-        if (kill(- j->pgid, SIGCONT) < 0) {
-            perror("kill (SIGCONT)");
-        }
-    }
-
-    /* Wait for it to report */
-    wait_for_job(j);
-
-    /* Put the shell back in the foreground */
-    tcsetpgrp(shell_terminal, shell_pgid);
-
-    /* Restore the shell's terminal modes */
-    tcgetattr(shell_terminal, &j->tmodes);
-    tcsetattr(shell_terminal, TCSADRAIN, &shell_tmodes);
-}
-
-void put_job_in_background(job *j, int cont) {
-    /* Send the job a continue signal if necessary */
-    if (cont) {
-        if (kill (-j->pgid, SIGCONT) < 0) {
-            perror("kill (SIGCONT)");
-        }
-    }
-}
-
-/* Mark a stopped job J as being running again */
-void mark_job_as_running(job *j) {
-    process *p;
-
-    for (p = j->first_process; p; p = p->next) {
-        p->stopped = 0;
-    }
-
-    j->notified = 0;
-}
-
-/* Continue the job J */
-void continue_job(job *j, int foreground) {
-    mark_job_as_running(j);
-    if (foreground) {
-        put_job_in_foreground(j, 1);
+    
+    if (argc == 1) {
+        interactive_mode();
     } else {
-        put_job_in_background(j, 1);
-    }
-}
+        printf("\nYou tried to run shell with arguments but only interactive mode is avaiable at this time\n");
+        printf("rerun shell with no arguments\n\n"); 
+    } 
+      
 
-/* Make sure the shell is running interactively as the foreground job before proceeding */
-void init_shell () {
-    /* See if we are running interactively */
-    shell_terminal = STDIN_FILENO;
-    shell_is_interactive = isatty(shell_terminal);
-
-    if (shell_is_interactive) {
-        /* Loop until we are in the foreground */
-        while (tcgetpgrp (shell_terminal) != (shell_pgid = getpgrp())) {
-            kill (- shell_pgid, SIGTTIN);
-        } 
-
-        /* Ignore interacitve and job-control signals */
-        signal (SIGINT, SIG_IGN);
-        signal (SIGQUIT, SIG_IGN);
-        signal (SIGTSTP, SIG_IGN);
-        signal (SIGTTIN, SIG_IGN);
-        signal (SIGTTOU, SIG_IGN);
-        signal (SIGCHLD, SIG_IGN);
-
-        /* Put ourselves in our own process group */
-        shell_pgid = getpid();
-        if (setpgid (shell_pgid, shell_pgid) < 0) {
-            perror("Couldn't put the shell in its own process group");
-            exit(1);
-        }
-
-        /* Grab control of the terminal */
-        tcsetpgrp(shell_terminal, shell_pgid);
-
-        /* Save default terminal attributes for shell */
-        tcgetattr(shell_terminal, &shell_tmodes);
-    }
-}
-
-void launch_process(process *p, pid_t pgid, int infile, int outfile, int errfile, int foreground) {
-    pid_t pid;
-
-    if (shell_is_interactive) {
-        /* Put the process into the process group and give the process group
-         * the terminal if appropriate. This has to be done both by the shell
-         * and in the individual child processes because of potential race 
-         * conditions.
-         */
-        pid = getpid();
-        if (pgid == 0) {
-            pgid = pid;
-        }
-
-        setpgid(pid, pgid);
-        
-        if (foreground) {
-            tcsetpgrp(shell_terminal, pgid);
-        }
-
-        /* Set the handling for job control signals back to the default */
-        signal(SIGINT, SIG_DFL);
-        signal(SIGQUIT, SIG_DFL);
-        signal(SIGTSTP, SIG_DFL);
-        signal(SIGTTIN, SIG_DFL);
-        signal(SIGTTOU, SIG_DFL);
-        signal(SIGCHLD, SIG_DFL);
-    }
-
-    /* Set the standard input/output channels of the new process */
-    if (infile != STDIN_FILENO) {
-        dup2(infile, STDIN_FILENO);
-        close(infile);
-    }
-
-    if (outfile != STDIN_FILENO) {
-        dup2(outfile, STDOUT_FILENO);
-        close(outfile);
-    }
-
-    if (errfile != STDERR_FILENO) {
-        dup2(errfile, STDERR_FILENO);
-        close(errfile);
-    }
-
-    /* Exec the new process. Make sure we exit */
-    execvp(p->argv[0], p->argv);
-    perror("execvp");
-    exit(1);
-}
-
-void launch_job(job *j, int foreground) {
-    process *p;
-    pid_t pid;
-    int mypipe[2], infile, outfile;
-
-    infile = j->stdin;
-    for (p = j->first_process; p; p = p->next) {
-        /* Set up pipes, if necessary */
-        if (p->next) {
-            if (pipe(mypipe) < 0) {
-                perror("pipe");
-                exit(1);
-            }
-            outfile = mypipe[1];
-        } else {
-            outfile = j->stdout;   
-        }
-
-        /* Fork the child processes */
-        pid = fork();
-        if (pid == 0) {
-            /* This is the child process */
-            launch_process(p, j->pgid, infile, outfile, j->stderr, foreground);
-        } else if (pid < 0) {
-            /* The fork failed */
-            perror("fork");
-            exit(1);
-        } else {
-            /* This is the parent process */
-            p->pid = pid;
-            if (shell_is_interactive) {
-                if (!j->pgid) {
-                    j->pgid = pid;
-                }
-                setpgid(pid, j->pgid);
-            }
-        } 
-
-        /* Clean up after pipes */
-        if (infile != j->stdin) {
-            close(infile);
-        }
-
-        if (outfile != j->stdout) {
-            close(outfile);
-        }
-
-        infile = mypipe[0];
-        
-    }
-
-    format_job_info(j, "launched");
-
-    if (!shell_is_interactive) {
-        wait_for_job(j);
-    } else if (foreground) {
-        put_job_in_foreground(j, 0);
-    } else {
-        put_job_in_background(j, 0);
-    }
+    return 0;
 }
