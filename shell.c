@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 200112L
+#define _POSIX_SOURCE 200112L
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,21 +8,10 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <fcntl.h>
-#include <termios.h>
 
 #define SH_RL_BUFSIZE 1024
 #define SH_TOK_BUFSIZE 64
 #define SH_TOK_DELIM " \t\r\n\a"
-
-/* A process object is a single process */
-typedef struct process {
-    struct process *next;   /* next process in the pipeline */
-    char **argv;            /*for exec */
-    pid_t pid;              /* process ID */
-    char completed;         /* true if process has completed */
-    char stopped;           /* true if process has stopped */
-    int status;             /* reported status value */
-} process;
 
 // Shell pid, gpid 
 static pid_t SH_PID;
@@ -32,13 +21,9 @@ pid_t pid;
 struct sigaction act_child;
 struct sigaction act_int;
 
-struct termios shell_tmodes;
-
 // Global flags
 int no_prompt;
 int background;
-int shell_terminal;
-int shell_is_interactive;
 
 /*
  * Function Declarations for builtin shell commands
@@ -46,7 +31,6 @@ int shell_is_interactive;
 int shell_cd(char **args);
 int shell_help(char **args);
 int shell_quit(char **args);
-int shell_barrier(char **args);
 
 // handler for SIGCHILD
 void signalHandler_child(int p) {
@@ -68,10 +52,15 @@ void signalHandler_int(int p) {
  * List of builtin commands, followed by their corresponding functions
  */
 char *builtin_str[] = {
-    "barrier",
     "cd",
     "help",
     "quit",
+};
+
+int (*builtin_func[]) (char **) = {
+    &shell_cd,
+    &shell_help,
+    &shell_quit,
 };
 
 int shell_num_builtins() {
@@ -116,46 +105,6 @@ int shell_help(char **args) {
 // Quits shell obviously
 int shell_quit(char **args) {
     return 0;
-}
-
-int shell_barrier(char **args) {
-    return 1; 
-}
-
-/* Set up shell */
-void init_shell() {
-   /* See if we are running interactively */
-    shell_terminal = STDIN_FILENO;
-    shell_is_interactive = isatty(shell_terminal);
-
-    if (shell_is_interactive) {
-        /* Loop until in foreground */
-        while (tcgetpgrp(shell_terminal) != (SH_PGID = getpgrp())) {
-            kill (- SH_PGID, SIGTTIN);
-        }
-
-        /* Ignore interactive and job-control signals */
-        signal(SIGINT, SIG_IGN);
-        signal(SIGQUIT, SIG_IGN);
-        signal(SIGTSTP, SIG_IGN);
-        signal(SIGTTIN, SIG_IGN);
-        signal(SIGTTOU, SIG_IGN);
-        signal(SIGCHLD, SIG_IGN);
-
-        // Put ourselves in our own process group 
-        SH_PGID = getpid();
-        if (setpgid(SH_PGID, SH_PGID) < 0) {
-            perror("Couldn't put shell in it's own process group");
-            exit(1);
-        }
-
-        /* Grab contro of the terminal */
-        tcsetpgrp(shell_terminal, SH_PGID);
-
-        // Save default attributes
-        tcgetattr(shell_terminal, &shell_tmodes);
-    }
-    
 }
 
 // Check to see if & is at the end of final token but not alone in the token
@@ -353,8 +302,6 @@ int shell_execute(char **args) {
 
     // quit end shell 
     if (strcmp(args[0], "quit") == 0) return shell_quit(args);
-    // wait until all background processes are done
-    if (strcmp(args[0], "barrier") == 0) return shell_barrier(args);
     // help returns list of builtin functions
     else if (strcmp(args[0], "help") == 0) return shell_help(args);
     // cd changes the directory
@@ -409,7 +356,22 @@ int main (int argc, char *argv[]) {
 
     pid = -10; // pid not possible
 
-    init_shell(); 
+    SH_PID = getpid();
+
+    act_child.sa_handler = signalHandler_child;
+    act_int.sa_handler = signalHandler_int;
+
+    sigaction(SIGCHLD, &act_child, 0);
+    sigaction(SIGINT, &act_int, 0);
+
+    // Create own process group
+    setpgid(SH_PID, SH_PID); // shell process is group leader
+
+    SH_PGID = getpgrp();
+    if (SH_PID != SH_PGID) {
+        perror("Shell is not process group leader");
+        exit(EXIT_FAILURE);
+    }
     
     if (argc == 1) {
         interactive_mode();
