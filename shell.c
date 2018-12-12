@@ -1,4 +1,4 @@
-#define _POSIX_SOURCE 200112L
+#define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -349,8 +349,30 @@ void interactive_mode(void) {
     } while (status);
 }
 
-int main (int argc, char *argv[]) {
-    
+void batch_mode(char* batch_file_name) {
+    FILE *fp;
+    char *line = NULL;
+    size_t len = 0;
+    ssize_t read;
+
+    if ((fp = fopen(batch_file_name, "r")) == NULL) {
+        perror("fopen");
+        exit(EXIT_FAILURE); 
+    }
+
+    while ((read = getline(&line, &len, fp)) != -1) {
+        printf("%s", line);
+    }
+
+    fclose(fp);
+    if (line) free(line);
+
+    exit(EXIT_SUCCESS);
+
+}
+
+int main (int argc, char *argv[]) { 
+    char* batch_file_name;
     no_prompt = 0;
     background = 0;
 
@@ -376,10 +398,15 @@ int main (int argc, char *argv[]) {
     if (argc == 1) {
         interactive_mode();
     } else {
+        printf("Batch mode\n");
+    } 
+
+     /*  } else {
         printf("\nYou tried to run shell with arguments but only interactive mode is avaiable at this time\n");
         printf("rerun shell with no arguments\n\n"); 
-    } 
+    }*/ 
       
 
     return 0;
 }
+
