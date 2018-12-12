@@ -352,6 +352,7 @@ void interactive_mode(void) {
 void batch_mode(char* batch_file_name) {
     FILE *fp;
     char *line = NULL;
+    char **args;
     size_t len = 0;
     ssize_t read;
 
@@ -361,18 +362,20 @@ void batch_mode(char* batch_file_name) {
     }
 
     while ((read = getline(&line, &len, fp)) != -1) {
-        printf("%s", line);
+        printf("%s", line); 
+        args = split_line(line);
+        shell_execute(args);
     }
 
     fclose(fp);
     if (line) free(line);
+    if (args) free(args);
 
     exit(EXIT_SUCCESS);
 
 }
 
 int main (int argc, char *argv[]) { 
-    char* batch_file_name;
     no_prompt = 0;
     background = 0;
 
@@ -399,6 +402,7 @@ int main (int argc, char *argv[]) {
         interactive_mode();
     } else {
         printf("Batch mode\n");
+        batch_mode(argv[1]);
     } 
 
      /*  } else {
