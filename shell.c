@@ -76,7 +76,7 @@ int shell_cd(char **args) {
         fprintf(stderr, "shell: expected argument to \"cd\"\n");
     } else {
         if (chdir(args[1]) != 0) {
-            perror("shell");
+            fprintf(stderr, "Unable to change directory to %s\n", args[1]); 
         }
     }
 
@@ -107,6 +107,12 @@ int shell_quit(char **args) {
     return 0;
 }
 
+const char *get_filename_ext(const char *file_name) {
+    const char *dot = strrchr(file_name, '.');
+    if (!dot || dot == file_name) return "";
+    return dot + 1; 
+}
+
 // Check to see if & is at the end of final token but not alone in the token
 // Returns 1 when we find the background flag
 int check_background(char **args) {
@@ -126,39 +132,6 @@ int check_background(char **args) {
     } else {
         return 0;
     }
-}
-
-// Creates child processes to execute non builtin commands
-int launch_shell(char **args) { 
-    int status;
-    
-    if (!background) {
-        background = check_background(args); 
-    } 
-
-    pid = fork();
-
-    if (pid == 0) {
-        // Child process   
-           
-        // Execute not builtin function
-        if (execvp(args[0], args) == -1) {
-            perror("shell");
-        }
-
-        exit(EXIT_FAILURE);
-    } else if (pid < 0) {
-        // Error forking
-        perror("shell");
-        exit(EXIT_FAILURE);
-    } 
-    
-    // if background flag not set we wait for process to finish
-    if (!background) {
-        waitpid(pid, &status, WUNTRACED);
-    }
-
-    return 1;
 }
 
 // Reads in line from shell so we can parse it
@@ -255,7 +228,7 @@ void redirection(char *args[], char *in_file, char *out_file) {
         // Open corresponding file and truncate its length to 0
         fd = open(out_file, O_CREAT | O_TRUNC | O_WRONLY, 0600);
         if (fd < 0) {
-            perror("open");
+            fprintf(stderr, "Could not open the file: %s\n", out_file);
             exit(EXIT_FAILURE);
         }
 
@@ -265,19 +238,52 @@ void redirection(char *args[], char *in_file, char *out_file) {
 
         // Run the corresponding command
         if (execvp(args[0], args_copy) == -1) { 
-            perror("execvp"); 
+            fprintf(stderr, "Could not run the command: %s\n", args[0]);
             kill(getpid(), SIGTERM);
         }
 
     } else if (pid < 0) { 
         // Error forking
-        perror("shell");
+        fprintf(stderr, "Error forking the child process\n");
         exit(EXIT_FAILURE);
     }
 
     waitpid(pid, NULL, 0);
 }
-/* TODO */
+
+// Creates child processes to execute non builtin commands
+int launch_shell(char **args) { 
+    int status;
+    
+    if (!background) {
+        background = check_background(args); 
+    } 
+
+    pid = fork();
+
+    if (pid == 0) {
+        // Child process   
+           
+        // Execute not builtin function
+        if (execvp(args[0], args) == -1) {
+            fprintf(stderr, "Could not execute the %s command\n", args[0]); 
+        }
+
+        exit(EXIT_FAILURE);
+    } else if (pid < 0) {
+        // Error forking
+        fprintf(stderr, "Unable to fork the child process for command %s\n", args[0]); 
+        exit(EXIT_FAILURE);
+    } 
+    
+    // if background flag not set we wait for process to finish
+    if (!background) {
+        waitpid(pid, &status, WUNTRACED);
+    }
+
+    return 1;
+}
+
 // Executes builtin functions or returns non builtin function calls
 // Need to add redirection functionality
 int shell_execute(char **args) {
@@ -357,7 +363,7 @@ void batch_mode(char* batch_file_name) {
     ssize_t read;
 
     if ((fp = fopen(batch_file_name, "r")) == NULL) {
-        perror("fopen");
+        fprintf(stderr, "Unable to open the batch file: %s\n", batch_file_name);
         exit(EXIT_FAILURE); 
     }
 
@@ -372,10 +378,9 @@ void batch_mode(char* batch_file_name) {
     if (args) free(args);
 
     exit(EXIT_SUCCESS);
-
 }
 
-int main (int argc, char *argv[]) { 
+int main (int argc, char *argv[]) {  
     no_prompt = 0;
     background = 0;
 
@@ -394,22 +399,23 @@ int main (int argc, char *argv[]) {
 
     SH_PGID = getpgrp();
     if (SH_PID != SH_PGID) {
-        perror("Shell is not process group leader");
+        fprintf(stderr, "Shell is not the process leader");
         exit(EXIT_FAILURE);
     }
     
     if (argc == 1) {
         interactive_mode();
+    } else if (argc == 2) {  
+        if ((strcmp(get_filename_ext(argv[1]), "bat")) == 0) {
+            printf("Batch Mode\n");
+            batch_mode(argv[1]);
+        } else {
+            fprintf(stderr, "File %s is not a batch file\nTherefore we can not run the shell in batch mode\n", argv[1]);
+        }
     } else {
-        printf("Batch mode\n");
-        batch_mode(argv[1]);
-    } 
-
-     /*  } else {
-        printf("\nYou tried to run shell with arguments but only interactive mode is avaiable at this time\n");
-        printf("rerun shell with no arguments\n\n"); 
-    }*/ 
-      
+        fprintf(stderr, "Incorrect number of arguments for the shell\n");
+        exit(EXIT_FAILURE);
+    }
 
     return 0;
 }
