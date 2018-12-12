@@ -83,7 +83,6 @@ int shell_cd(char **args) {
     return 1;
 }
 
-/* TODO */
 // Displays the builtin functions
 // Probably should add more information about each function
 int shell_help(char **args) {
@@ -107,6 +106,7 @@ int shell_quit(char **args) {
     return 0;
 }
 
+// Function that returns the extension of a file so we can check if file is a batch file
 const char *get_filename_ext(const char *file_name) {
     const char *dot = strrchr(file_name, '.');
     if (!dot || dot == file_name) return "";
@@ -296,15 +296,6 @@ int shell_execute(char **args) {
         // Empty command was entered
         return 1;
     }
-   
-    // Need to add ">" and "<" implementation 
-    /*while (args[j] != NULL) {
-        if (strcmp(args[j], ">") == 0 || (strcmp(args[j], "&")) == 0) {
-            break;
-        }   
-        args_copy[j] = args[j];
-        j++;
-    } */
 
     // quit end shell 
     if (strcmp(args[0], "quit") == 0) return shell_quit(args);
@@ -330,8 +321,7 @@ int shell_execute(char **args) {
             }
             i++;
         }
-    }
-    //args_copy[i] = NULL;
+    } 
 
     // Prob should change this to args_copy[i]
     return launch_shell(args);
@@ -406,6 +396,7 @@ int main (int argc, char *argv[]) {
     if (argc == 1) {
         interactive_mode();
     } else if (argc == 2) {  
+        // Check to see if file is a batch file
         if ((strcmp(get_filename_ext(argv[1]), "bat")) == 0) {
             printf("Batch Mode\n");
             batch_mode(argv[1]);
